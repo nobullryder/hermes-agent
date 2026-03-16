@@ -3542,7 +3542,8 @@ class AIAgent:
 
         flush_content = (
             "[System: The session is being compressed. "
-            "Please save anything worth remembering to your memories.]"
+            "Save anything worth remembering — prioritize user preferences, "
+            "corrections, and recurring patterns over task-specific details.]"
         )
         _sentinel = f"__flush_{id(self)}_{time.monotonic()}"
         flush_msg = {"role": "user", "content": flush_content, "_flush_sentinel": _sentinel}
@@ -4541,8 +4542,9 @@ class AIAgent:
             self._turns_since_memory += 1
             if self._turns_since_memory >= self._memory_nudge_interval:
                 user_message += (
-                    "\n\n[System: You've had several exchanges in this session. "
-                    "Consider whether there's anything worth saving to your memories.]"
+                    "\n\n[System: You've had several exchanges. Consider: "
+                    "has the user shared preferences, corrected you, or revealed "
+                    "something about their workflow worth remembering for future sessions?]"
                 )
                 self._turns_since_memory = 0
 

@@ -924,6 +924,7 @@ def select_provider_and_model(args=None):
         "kilocode": "Kilo Code",
         "alibaba": "Alibaba Cloud (DashScope)",
         "huggingface": "Hugging Face",
+        "cc-api": "CC API",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active)
@@ -951,6 +952,7 @@ def select_provider_and_model(args=None):
         ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
         ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
         ("huggingface", "Hugging Face Inference Providers (20+ open models)"),
+        ("cc-api", "CC API (native Claude session API)"),
     ]
 
     # Add user-defined custom providers from config.yaml
@@ -1013,6 +1015,8 @@ def select_provider_and_model(args=None):
         _model_flow_copilot_acp(config, current_model)
     elif selected_provider == "copilot":
         _model_flow_copilot(config, current_model)
+    elif selected_provider == "cc-api":
+        _model_flow_cc_api(config)
     elif selected_provider == "custom":
         _model_flow_custom(config)
     elif selected_provider.startswith("custom:") and selected_provider in _custom_provider_map:
@@ -1271,6 +1275,87 @@ def _model_flow_openai_codex(config, current_model=""):
     else:
         print("No change.")
 
+
+def _model_flow_cc_api(config):
+    """CC API provider: collect gateway URL, API key, and model."""
+    from hermes_cli.auth import _save_model_choice, deactivate_provider
+    from hermes_cli.config import get_env_value, load_config, save_config
+    from hermes_cli.models import probe_api_models
+
+    current_url = get_env_value("CC_API_BASE_URL") or "http://127.0.0.1:8000"
+    current_key = get_env_value("CC_API_KEY") or ""
+
+    print("CC API configuration:")
+    print(f"  Current URL: {current_url}")
+    if current_key:
+        print(f"  Current key: {current_key[:8]}...")
+    print()
+
+    try:
+        base_url = input(f"Gateway base URL [{current_url}]: ").strip() or current_url
+        api_key = input(f"Gateway API key [{current_key[:8] + '...' if current_key else 'optional'}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    if not base_url.startswith(("http://", "https://")):
+        print(f"Invalid URL: {base_url} (must start with http:// or https://)")
+        return
+
+    effective_key = api_key or current_key
+    probe = probe_api_models(effective_key, base_url)
+    if probe.get("models") is not None:
+        print(
+            f"Verified gateway via {probe.get('probed_url')} "
+            f"({len(probe.get('models') or [])} model(s) visible)"
+        )
+    else:
+        print(
+            f"Warning: could not verify this gateway via {probe.get('probed_url')}. "
+            f"Hermes will still save it."
+        )
+
+    detected_models = probe.get("models") or []
+    try:
+        if len(detected_models) == 1:
+            print(f"  Detected model: {detected_models[0]}")
+            confirm = input("  Use this model? [Y/n]: ").strip().lower()
+            model_name = detected_models[0] if confirm in ("", "y", "yes") else input("Model name: ").strip()
+        elif len(detected_models) > 1:
+            print("  Available models:")
+            for i, m in enumerate(detected_models, 1):
+                print(f"    {i}. {m}")
+            pick = input(f"  Select model [1-{len(detected_models)}] or type name: ").strip()
+            if pick.isdigit() and 1 <= int(pick) <= len(detected_models):
+                model_name = detected_models[int(pick) - 1]
+            else:
+                model_name = pick
+        else:
+            model_name = input("Model name (e.g. anthropic/claude-opus-4.6): ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    if not model_name:
+        print("No model selected. Cancelled.")
+        return
+
+    _save_model_choice(model_name)
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["default"] = model_name
+    model["provider"] = "cc-api"
+    model["base_url"] = base_url.rstrip("/")
+    model["api_mode"] = "cc_api"
+    if effective_key:
+        model["api_key"] = effective_key
+    save_config(cfg)
+    deactivate_provider()
+    config["model"] = dict(model)
+    print(f"Default model set to: {model_name} (via CC API)")
 
 
 def _model_flow_custom(config):

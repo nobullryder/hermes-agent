@@ -39,6 +39,7 @@ class TestProviderRegistry:
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
+        ("cc-api", "CC API", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
         ("minimax", "MiniMax", "api_key"),
@@ -93,6 +94,11 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("HF_TOKEN",)
         assert pconfig.base_url_env_var == "HF_BASE_URL"
 
+    def test_cc_api_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["cc-api"]
+        assert pconfig.api_key_env_vars == ("CC_API_KEY",)
+        assert pconfig.base_url_env_var == "CC_API_BASE_URL"
+
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
@@ -103,6 +109,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
         assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
+        assert PROVIDER_REGISTRY["cc-api"].inference_base_url == "http://127.0.0.1:8000"
 
     def test_oauth_providers_unchanged(self):
         """Ensure we didn't break the existing OAuth providers."""
@@ -208,6 +215,12 @@ class TestResolveProvider:
 
     def test_explicit_huggingface(self):
         assert resolve_provider("huggingface") == "huggingface"
+
+    def test_explicit_cc_api(self):
+        assert resolve_provider("cc-api") == "cc-api"
+
+    def test_alias_claude_harness(self):
+        assert resolve_provider("ccapi") == "cc-api"
 
     def test_alias_hf(self):
         assert resolve_provider("hf") == "huggingface"
@@ -592,6 +605,19 @@ class TestRuntimeProviderResolution:
 
 class TestHasAnyProviderConfigured:
 
+    @staticmethod
+    def _clear_provider_env(monkeypatch):
+        for var in (
+            "OPENROUTER_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN",
+            "OPENAI_BASE_URL",
+            "CC_API_KEY",
+            "CC_API_BASE_URL",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
     def test_glm_key_counts(self, monkeypatch, tmp_path):
         from hermes_cli import config as config_module
         monkeypatch.setenv("GLM_API_KEY", "test-key")
@@ -630,9 +656,8 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         # Clear all provider env vars so earlier checks don't short-circuit
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
-            monkeypatch.delenv(var, raising=False)
+        self._clear_provider_env(monkeypatch)
+        monkeypatch.setattr("hermes_cli.auth.get_auth_status", lambda provider: {"logged_in": False})
         # Simulate valid Claude Code credentials
         monkeypatch.setattr(
             "agent.anthropic_adapter.read_claude_code_credentials",
@@ -659,9 +684,7 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         # Clear all provider env vars
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
-            monkeypatch.delenv(var, raising=False)
+        self._clear_provider_env(monkeypatch)
         from hermes_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is True
 
@@ -678,9 +701,7 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
-            monkeypatch.delenv(var, raising=False)
+        self._clear_provider_env(monkeypatch)
         from hermes_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is True
 
@@ -697,9 +718,7 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
-            monkeypatch.delenv(var, raising=False)
+        self._clear_provider_env(monkeypatch)
         from hermes_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is True
 
@@ -716,9 +735,8 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
-            monkeypatch.delenv(var, raising=False)
+        self._clear_provider_env(monkeypatch)
+        monkeypatch.setattr("hermes_cli.auth.get_auth_status", lambda provider: {"logged_in": False})
         from hermes_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is False
 
@@ -735,9 +753,7 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         # Clear all provider env vars
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
-            monkeypatch.delenv(var, raising=False)
+        self._clear_provider_env(monkeypatch)
         # Simulate valid Claude Code credentials
         monkeypatch.setattr(
             "agent.anthropic_adapter.read_claude_code_credentials",

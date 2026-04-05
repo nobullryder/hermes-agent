@@ -416,10 +416,12 @@ def fetch_endpoint_model_metadata(
     api_key: str = "",
     force_refresh: bool = False,
 ) -> Dict[str, Dict[str, Any]]:
-    """Fetch model metadata from an OpenAI-compatible ``/models`` endpoint.
+    """Fetch model metadata from endpoint model catalogs.
 
     This is used for explicit custom endpoints where hardcoded global model-name
     defaults are unreliable. Results are cached in memory per base URL.
+    Supports both OpenAI-style ``/models`` and native gateway ``/api/models``
+    responses as long as they return ``{"data": [...]}`` with model entries.
     """
     normalized = _normalize_base_url(base_url)
     if not normalized or _is_openrouter_base_url(normalized):
@@ -431,19 +433,19 @@ def fetch_endpoint_model_metadata(
         if cached is not None and (time.time() - cached_at) < _ENDPOINT_MODEL_CACHE_TTL:
             return cached
 
-    candidates = [normalized]
-    if normalized.endswith("/v1"):
-        alternate = normalized[:-3].rstrip("/")
-    else:
-        alternate = normalized + "/v1"
-    if alternate and alternate not in candidates:
-        candidates.append(alternate)
+    root = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized.rstrip("/")
+    probe_urls = [
+        f"{root}/models",
+        f"{root}/api/models",
+        f"{root}/v1/models",
+    ]
+    seen_urls = set()
+    probe_urls = [url for url in probe_urls if not (url in seen_urls or seen_urls.add(url))]
 
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     last_error: Optional[Exception] = None
 
-    for candidate in candidates:
-        url = candidate.rstrip("/") + "/models"
+    for url in probe_urls:
         try:
             response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
@@ -475,7 +477,7 @@ def fetch_endpoint_model_metadata(
             if is_llamacpp:
                 try:
                     # Try /v1/props first (current llama.cpp); fall back to /props for older builds
-                    base = candidate.rstrip("/").replace("/v1", "")
+                    base = root
                     props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5)
                     if not props_resp.ok:
                         props_resp = requests.get(base + "/props", headers=headers, timeout=5)
@@ -496,7 +498,7 @@ def fetch_endpoint_model_metadata(
             last_error = exc
 
     if last_error:
-        logger.debug("Failed to fetch model metadata from %s/models: %s", normalized, last_error)
+        logger.debug("Failed to fetch model metadata from %s: %s", normalized, last_error)
     _endpoint_model_metadata_cache[normalized] = {}
     _endpoint_model_metadata_cache_time[normalized] = time.time()
     return {}

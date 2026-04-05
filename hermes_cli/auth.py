@@ -224,6 +224,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("HF_TOKEN",),
         base_url_env_var="HF_BASE_URL",
     ),
+    "cc-api": ProviderConfig(
+        id="cc-api",
+        name="CC API",
+        auth_type="api_key",
+        inference_base_url="http://127.0.0.1:8000",
+        api_key_env_vars=("CC_API_KEY",),
+        base_url_env_var="CC_API_BASE_URL",
+    ),
 }
 
 
@@ -741,6 +749,7 @@ def resolve_provider(
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
+        "ccapi": "cc-api", "cc": "cc-api",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         # Local server aliases — route through the generic custom provider

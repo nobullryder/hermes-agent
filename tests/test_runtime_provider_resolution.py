@@ -1,6 +1,10 @@
 from hermes_cli import runtime_provider as rp
 
 
+def test_parse_api_mode_accepts_cc_api():
+    assert rp._parse_api_mode("cc_api") == "cc_api"
+
+
 def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     class _Entry:
         access_token = "pool-token"
@@ -155,6 +159,61 @@ def test_resolve_runtime_provider_ai_gateway(monkeypatch):
     assert resolved["base_url"] == "https://ai-gateway.vercel.sh/v1"
     assert resolved["api_key"] == "test-ai-gw-key"
     assert resolved["requested_provider"] == "ai-gateway"
+
+
+def test_resolve_runtime_provider_cc_api(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "cc-api")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {
+            "provider": provider,
+            "api_key": "gateway-key",
+            "base_url": "http://127.0.0.1:8000",
+            "source": "env",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="cc-api")
+
+    assert resolved["provider"] == "cc-api"
+    assert resolved["api_mode"] == "cc_api"
+    assert resolved["base_url"] == "http://127.0.0.1:8000"
+    assert resolved["api_key"] == "gateway-key"
+    assert resolved["requested_provider"] == "cc-api"
+
+
+def test_resolve_runtime_provider_cc_api_uses_saved_config(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "cc-api")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "cc-api",
+            "base_url": "http://127.0.0.1:8000",
+            "api_key": "change-me",
+            "default": "claude-opus-4-6",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {
+            "provider": provider,
+            "api_key": "",
+            "base_url": "http://127.0.0.1:8000",
+            "source": "default",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="cc-api")
+
+    assert resolved["provider"] == "cc-api"
+    assert resolved["api_mode"] == "cc_api"
+    assert resolved["base_url"] == "http://127.0.0.1:8000"
+    assert resolved["api_key"] == "change-me"
+    assert resolved["source"] == "config"
 
 
 def test_resolve_runtime_provider_ai_gateway_explicit_override_skips_pool(monkeypatch):

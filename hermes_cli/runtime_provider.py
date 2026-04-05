@@ -118,7 +118,7 @@ def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
         return "chat_completions"
 
 
-_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages"}
+_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "cc_api"}
 
 
 def _parse_api_mode(raw: Any) -> Optional[str]:
@@ -145,6 +145,8 @@ def _resolve_runtime_from_pool_entry(
     if provider == "openai-codex":
         api_mode = "codex_responses"
         base_url = base_url or DEFAULT_CODEX_BASE_URL
+    elif provider == "cc-api":
+        api_mode = "cc_api"
     elif provider == "anthropic":
         api_mode = "anthropic_messages"
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
@@ -163,6 +165,8 @@ def _resolve_runtime_from_pool_entry(
         configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
         if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
             api_mode = configured_mode
+        elif provider == "cc-api":
+            api_mode = "cc_api"
         elif provider in ("opencode-zen", "opencode-go"):
             from hermes_cli.models import opencode_model_api_mode
             api_mode = opencode_model_api_mode(provider, model_cfg.get("default", ""))
@@ -505,13 +509,18 @@ def _resolve_explicit_runtime(
 
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+        cfg_api_key = str(model_cfg.get("api_key") or model_cfg.get("api") or "").strip()
         env_url = ""
         if pconfig.base_url_env_var:
             env_url = os.getenv(pconfig.base_url_env_var, "").strip().rstrip("/")
 
         base_url = explicit_base_url
         if not base_url:
-            if provider == "kimi-coding":
+            if provider == "cc-api" and cfg_provider == "cc-api" and cfg_base_url:
+                base_url = cfg_base_url
+            elif provider == "kimi-coding":
                 creds = resolve_api_key_provider_credentials(provider)
                 base_url = creds.get("base_url", "").rstrip("/")
             else:
@@ -519,14 +528,19 @@ def _resolve_explicit_runtime(
 
         api_key = explicit_api_key
         if not api_key:
-            creds = resolve_api_key_provider_credentials(provider)
-            api_key = creds.get("api_key", "")
-            if not base_url:
-                base_url = creds.get("base_url", "").rstrip("/")
+            if provider == "cc-api" and cfg_provider == "cc-api" and cfg_api_key:
+                api_key = cfg_api_key
+            else:
+                creds = resolve_api_key_provider_credentials(provider)
+                api_key = creds.get("api_key", "")
+                if not base_url:
+                    base_url = creds.get("base_url", "").rstrip("/")
 
         api_mode = "chat_completions"
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, api_key)
+        elif provider == "cc-api":
+            api_mode = "cc_api"
         else:
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             if configured_mode:
@@ -690,11 +704,24 @@ def resolve_runtime_provider(
     # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+        cfg_api_key = str(model_cfg.get("api_key") or model_cfg.get("api") or "").strip()
         creds = resolve_api_key_provider_credentials(provider)
         base_url = creds.get("base_url", "").rstrip("/")
+        api_key = creds.get("api_key", "")
+        source = creds.get("source", "env")
+        if provider == "cc-api" and cfg_provider == "cc-api":
+            if cfg_base_url:
+                base_url = cfg_base_url
+            if cfg_api_key:
+                api_key = cfg_api_key
+                source = "config"
         api_mode = "chat_completions"
         if provider == "copilot":
-            api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
+            api_mode = _copilot_runtime_api_mode(model_cfg, api_key)
+        elif provider == "cc-api":
+            api_mode = "cc_api"
         else:
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
             # Only honor persisted api_mode when it belongs to the same provider family.
@@ -715,8 +742,8 @@ def resolve_runtime_provider(
             "provider": provider,
             "api_mode": api_mode,
             "base_url": base_url,
-            "api_key": creds.get("api_key", ""),
-            "source": creds.get("source", "env"),
+            "api_key": api_key,
+            "source": source,
             "requested_provider": requested_provider,
         }
 

@@ -230,10 +230,44 @@ class TestFetchApiModels:
         with patch("hermes_cli.models.urllib.request.urlopen", side_effect=_fake_urlopen):
             probe = probe_api_models("key", "http://localhost:8000")
 
-        assert calls == ["http://localhost:8000/models", "http://localhost:8000/v1/models"]
+        assert calls == [
+            "http://localhost:8000/models",
+            "http://localhost:8000/api/models",
+            "http://localhost:8000/v1/models",
+        ]
         assert probe["models"] == ["local-model"]
         assert probe["resolved_base_url"] == "http://localhost:8000/v1"
         assert probe["used_fallback"] is True
+
+    def test_probe_api_models_uses_gateway_api_models(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data": [{"id": "claude-sonnet-4-6"}, {"id": "claude-opus-4-6"}]}'
+
+        calls = []
+
+        def _fake_urlopen(req, timeout=5.0):
+            calls.append(req.full_url)
+            if req.full_url.endswith("/api/models"):
+                return _Resp()
+            raise Exception("404")
+
+        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=_fake_urlopen):
+            probe = probe_api_models("key", "http://localhost:8000")
+
+        assert calls == [
+            "http://localhost:8000/models",
+            "http://localhost:8000/api/models",
+        ]
+        assert probe["models"] == ["claude-sonnet-4-6", "claude-opus-4-6"]
+        assert probe["resolved_base_url"] == "http://localhost:8000"
+        assert probe["used_fallback"] is False
 
     def test_probe_api_models_uses_copilot_catalog(self):
         class _Resp:

@@ -88,6 +88,7 @@ from agent.model_metadata import (
     save_context_length, is_local_endpoint,
 )
 from agent.context_compressor import ContextCompressor
+from agent.cc_api import CCAPIAdapter
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
@@ -746,6 +747,7 @@ class AIAgent:
         # access for Codex Responses API streaming.
         self._anthropic_client = None
         self._is_anthropic_oauth = False
+        self._gateway_adapter = None
 
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
@@ -767,6 +769,23 @@ class AIAgent:
                 print(f"🤖 AI Agent initialized with model: {self.model} (Anthropic native)")
                 if effective_key and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+        elif self.api_mode == "cc_api":
+            self.api_key = api_key or ""
+            self._client_kwargs = {
+                "api_key": self.api_key,
+                "base_url": self.base_url,
+            }
+            self.client = None
+            self._gateway_adapter = CCAPIAdapter(
+                base_url=self.base_url,
+                api_key=self.api_key,
+                model=self.model,
+                hermes_session_id=session_id or "",
+            )
+            if not self.quiet_mode:
+                print(f"🤖 AI Agent initialized with model: {self.model} (CC API)")
+                if base_url:
+                    print(f"🔗 Using gateway base URL: {base_url}")
         else:
             if api_key and base_url:
                 # Explicit credentials from CLI/gateway — construct directly.
@@ -940,7 +959,9 @@ class AIAgent:
             timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
             short_uuid = uuid.uuid4().hex[:6]
             self.session_id = f"{timestamp_str}_{short_uuid}"
-        
+        if self._gateway_adapter is not None:
+            self._gateway_adapter.hermes_session_id = self.session_id
+
         # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
         hermes_home = get_hermes_home()
         self.logs_dir = hermes_home / "sessions"
@@ -1220,6 +1241,11 @@ class AIAgent:
                 "anthropic_api_key": self._anthropic_api_key,
                 "anthropic_base_url": self._anthropic_base_url,
                 "is_anthropic_oauth": self._is_anthropic_oauth,
+            })
+        elif self.api_mode == "cc_api":
+            self._primary_runtime.update({
+                "gateway_base_url": self.base_url,
+                "gateway_api_key": getattr(self, "api_key", ""),
             })
 
     def reset_session_state(self):
@@ -3919,6 +3945,8 @@ class AIAgent:
                         client=request_client_holder["client"],
                         on_first_delta=getattr(self, "_codex_on_first_delta", None),
                     )
+                elif self.api_mode == "cc_api":
+                    result["response"] = self._gateway_adapter.create(api_kwargs)
                 elif self.api_mode == "anthropic_messages":
                     result["response"] = self._anthropic_messages_create(api_kwargs)
                 else:
@@ -3948,6 +3976,9 @@ class AIAgent:
                             self._anthropic_api_key,
                             getattr(self, "_anthropic_base_url", None),
                         )
+                    elif self.api_mode == "cc_api":
+                        if self._gateway_adapter is not None:
+                            self._gateway_adapter.interrupt()
                     else:
                         request_client = request_client_holder.get("client")
                         if request_client is not None:
@@ -4037,6 +4068,34 @@ class AIAgent:
                 return self._interruptible_api_call(api_kwargs)
             finally:
                 self._codex_on_first_delta = None
+        if self.api_mode == "cc_api":
+            result = {"response": None, "error": None}
+
+            def _call_gateway():
+                try:
+                    result["response"] = self._gateway_adapter.stream(
+                        api_kwargs,
+                        on_first_delta=on_first_delta,
+                        stream_delta_callback=self._fire_stream_delta,
+                        tool_gen_callback=self._fire_tool_gen_started,
+                    )
+                except Exception as e:
+                    result["error"] = e
+
+            t = threading.Thread(target=_call_gateway, daemon=True)
+            t.start()
+            while t.is_alive():
+                t.join(timeout=0.3)
+                if self._interrupt_requested:
+                    try:
+                        if self._gateway_adapter is not None:
+                            self._gateway_adapter.interrupt()
+                    except Exception:
+                        pass
+                    raise InterruptedError("Agent interrupted during streaming API call")
+            if result["error"] is not None:
+                raise result["error"]
+            return result["response"]
 
         result = {"response": None, "error": None}
         request_client_holder = {"client": None}
@@ -4556,6 +4615,8 @@ class AIAgent:
             fb_base_url = str(fb_client.base_url)
             if fb_provider == "openai-codex":
                 fb_api_mode = "codex_responses"
+            elif fb_provider == "cc-api":
+                fb_api_mode = "cc_api"
             elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
                 fb_api_mode = "anthropic_messages"
             elif self._is_direct_openai_url(fb_base_url):
@@ -4579,6 +4640,20 @@ class AIAgent:
                 self._is_anthropic_oauth = _is_oauth_token(effective_key)
                 self.client = None
                 self._client_kwargs = {}
+                self._gateway_adapter = None
+            elif fb_api_mode == "cc_api":
+                self.api_key = fb_client.api_key
+                self.client = None
+                self._client_kwargs = {
+                    "api_key": fb_client.api_key,
+                    "base_url": fb_base_url,
+                }
+                self._gateway_adapter = CCAPIAdapter(
+                    base_url=fb_base_url,
+                    api_key=fb_client.api_key,
+                    model=fb_model,
+                    hermes_session_id=self.session_id,
+                )
             else:
                 # Swap OpenAI client and config in-place
                 self.api_key = fb_client.api_key
@@ -4587,6 +4662,7 @@ class AIAgent:
                     "api_key": fb_client.api_key,
                     "base_url": fb_base_url,
                 }
+                self._gateway_adapter = None
 
             # Re-evaluate prompt caching for the new provider/model
             is_native_anthropic = fb_api_mode == "anthropic_messages"
@@ -4664,12 +4740,22 @@ class AIAgent:
                 )
                 self._is_anthropic_oauth = rt["is_anthropic_oauth"]
                 self.client = None
+                self._gateway_adapter = None
+            elif self.api_mode == "cc_api":
+                self.client = None
+                self._gateway_adapter = CCAPIAdapter(
+                    base_url=rt["gateway_base_url"],
+                    api_key=rt["gateway_api_key"],
+                    model=self.model,
+                    hermes_session_id=self.session_id,
+                )
             else:
                 self.client = self._create_openai_client(
                     dict(rt["client_kwargs"]),
                     reason="restore_primary",
                     shared=True,
                 )
+                self._gateway_adapter = None
 
             # ── Restore context compressor state ──
             cc = self.context_compressor
@@ -4758,12 +4844,22 @@ class AIAgent:
                 )
                 self._is_anthropic_oauth = rt["is_anthropic_oauth"]
                 self.client = None
+                self._gateway_adapter = None
+            elif self.api_mode == "cc_api":
+                self.client = None
+                self._gateway_adapter = CCAPIAdapter(
+                    base_url=rt["gateway_base_url"],
+                    api_key=rt["gateway_api_key"],
+                    model=self.model,
+                    hermes_session_id=self.session_id,
+                )
             else:
                 self.client = self._create_openai_client(
                     dict(rt["client_kwargs"]),
                     reason="primary_recovery",
                     shared=True,
                 )
+                self._gateway_adapter = None
 
             wait_time = min(3 + retry_count, 8)
             self._vprint(
@@ -4930,6 +5026,15 @@ class AIAgent:
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
+        if self.api_mode == "cc_api":
+            return {
+                "model": self.model,
+                "messages": copy.deepcopy(api_messages),
+                "tools": copy.deepcopy(self.tools) if self.tools else [],
+                "timeout": float(os.getenv("HERMES_API_TIMEOUT", 1800.0)),
+                "max_tokens": self.max_tokens,
+            }
+
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_kwargs
             anthropic_messages = self._prepare_anthropic_messages_for_api(api_messages)
@@ -5583,6 +5688,15 @@ class AIAgent:
             reset_file_dedup(task_id)
         except Exception:
             pass
+
+        if self.api_mode == "cc_api" and self._gateway_adapter is not None:
+            try:
+                self._gateway_adapter.compact(
+                    keep_recent_messages=max(1, self.context_compressor.protect_last_n),
+                    messages=compressed,
+                )
+            except Exception as e:
+                logger.warning("Gateway compaction sync failed: %s", e)
 
         return compressed, new_system_prompt
 

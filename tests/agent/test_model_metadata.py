@@ -25,6 +25,7 @@ from agent.model_metadata import (
     _strip_provider_prefix,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
+    fetch_endpoint_model_metadata,
     get_model_context_length,
     get_next_probe_tier,
     get_cached_context_length,
@@ -461,6 +462,44 @@ class TestFetchModelMetadata:
 
         result = fetch_model_metadata(force_refresh=True)
         assert result == {}
+
+
+class TestFetchEndpointModelMetadata:
+    @patch("agent.model_metadata.requests.get")
+    def test_native_api_models_fallback_includes_context_length(self, mock_get):
+        import agent.model_metadata as mm
+
+        mm._endpoint_model_metadata_cache = {}
+        mm._endpoint_model_metadata_cache_time = {}
+
+        models_404 = MagicMock()
+        models_404.raise_for_status.side_effect = Exception("404")
+
+        api_models_ok = MagicMock()
+        api_models_ok.raise_for_status = MagicMock()
+        api_models_ok.json.return_value = {
+            "data": [
+                {
+                    "id": "claude-opus-4-6",
+                    "context_length": 1_000_000,
+                    "max_completion_tokens": 128_000,
+                }
+            ]
+        }
+
+        def side_effect(url, headers=None, timeout=10):
+            if url.endswith("/api/models"):
+                return api_models_ok
+            if url.endswith("/models"):
+                return models_404
+            raise AssertionError(f"Unexpected URL: {url}")
+
+        mock_get.side_effect = side_effect
+
+        result = fetch_endpoint_model_metadata("http://127.0.0.1:8000", api_key="secret", force_refresh=True)
+
+        assert result["claude-opus-4-6"]["context_length"] == 1_000_000
+        assert result["claude-opus-4-6"]["max_completion_tokens"] == 128_000
 
 
 # =========================================================================

@@ -273,6 +273,7 @@ _PROVIDER_LABELS = {
     "kilocode": "Kilo Code",
     "alibaba": "Alibaba Cloud (DashScope)",
     "huggingface": "Hugging Face",
+    "cc-api": "CC API",
     "custom": "Custom endpoint",
 }
 
@@ -311,6 +312,8 @@ _PROVIDER_ALIASES = {
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
+    "ccapi": "cc-api",
+    "cc": "cc-api",
 }
 
 
@@ -347,6 +350,7 @@ def list_available_providers() -> list[dict[str, str]]:
         "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
+        "cc-api",
     ]
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
@@ -1055,7 +1059,10 @@ def probe_api_models(
     base_url: Optional[str],
     timeout: float = 5.0,
 ) -> dict[str, Any]:
-    """Probe an OpenAI-compatible ``/models`` endpoint with light URL heuristics."""
+    """Probe a model-list endpoint with light URL heuristics.
+
+    Supports both OpenAI-style ``/models`` and CC API ``/api/models`` surfaces.
+    """
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
         return {
@@ -1081,9 +1088,9 @@ def probe_api_models(
     else:
         alternate_base = normalized + "/v1"
 
-    candidates: list[tuple[str, bool]] = [(normalized, False)]
+    base_candidates: list[tuple[str, bool]] = [(normalized, False)]
     if alternate_base and alternate_base != normalized:
-        candidates.append((alternate_base, True))
+        base_candidates.append((alternate_base, True))
 
     tried: list[str] = []
     headers: dict[str, str] = {}
@@ -1092,22 +1099,28 @@ def probe_api_models(
     if normalized.startswith(COPILOT_BASE_URL):
         headers.update(copilot_default_headers())
 
-    for candidate_base, is_fallback in candidates:
-        url = candidate_base.rstrip("/") + "/models"
-        tried.append(url)
-        req = urllib.request.Request(url, headers=headers)
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
-                return {
-                    "models": [m.get("id", "") for m in data.get("data", [])],
-                    "probed_url": url,
-                    "resolved_base_url": candidate_base.rstrip("/"),
-                    "suggested_base_url": alternate_base if alternate_base != candidate_base else normalized,
-                    "used_fallback": is_fallback,
-                }
-        except Exception:
-            continue
+    for candidate_base, is_fallback in base_candidates:
+        endpoint_candidates: list[tuple[str, str]] = [
+            (candidate_base.rstrip("/") + "/models", candidate_base.rstrip("/")),
+        ]
+        if not candidate_base.rstrip("/").endswith("/v1"):
+            endpoint_candidates.append((candidate_base.rstrip("/") + "/api/models", candidate_base.rstrip("/")))
+
+        for url, resolved_base in endpoint_candidates:
+            tried.append(url)
+            req = urllib.request.Request(url, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    data = json.loads(resp.read().decode())
+                    return {
+                        "models": [m.get("id", "") for m in data.get("data", [])],
+                        "probed_url": url,
+                        "resolved_base_url": resolved_base,
+                        "suggested_base_url": alternate_base if alternate_base != candidate_base else normalized,
+                        "used_fallback": is_fallback,
+                    }
+            except Exception:
+                continue
 
     return {
         "models": None,
